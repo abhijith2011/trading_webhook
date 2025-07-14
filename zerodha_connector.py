@@ -1,66 +1,66 @@
-# dashboard.py
-import streamlit as st
-import pandas as pd
+# zerodha_connector.py
+import os
+from dotenv import load_dotenv
+from kiteconnect import KiteConnect
 from datetime import datetime, timedelta
-from trade_engine import run_backtest, run_live_forward_test
+import pandas as pd
 
-st.set_page_config(page_title="📊 NIFTY Options Dashboard", layout="wide")
-st.title("📊 NIFTY Options | Heikin Ashi Strategy")
+# === Load environment variables ===
+load_dotenv()
+API_KEY = os.getenv("Z_API_KEY")
+API_SECRET = os.getenv("Z_API_SECRET")
 
-mode = st.sidebar.selectbox("Mode", ["Backtest", "Forward Test"])
-capital = st.sidebar.number_input("Capital (INR)", value=100000, step=5000)
+kite = KiteConnect(api_key=API_KEY)
 
-# === Manual File Upload for Backtesting ===
-if mode == "Backtest":
-    uploaded_file = st.file_uploader("📁 Upload 3-minute NIFTY option CSV file", type="csv")
+# === Manual login flow ===
+def login():
+    print("Go to the following URL and get your request token:")
+    print(kite.login_url())
+    request_token = input("Paste request token here: ").strip()
+    session = kite.generate_session(request_token, api_secret=API_SECRET)
+    kite.set_access_token(session["access_token"])
+    with open("access_token.txt", "w") as f:
+        f.write(session["access_token"])
+    print("✅ Login successful! Access token saved.")
 
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        df.columns = [c.lower() for c in df.columns]
+# === Use access token to connect ===
+def get_kite():
+    if not os.path.exists("access_token.txt"):
+        raise Exception("❌ access_token.txt not found. Run login() first.")
+    with open("access_token.txt", "r") as f:
+        token = f.read().strip()
+    kite.set_access_token(token)
+    return kite
 
-        if all(col in df.columns for col in ['time', 'open', 'high', 'low', 'close']):
-            st.success("✅ CSV loaded")
-            st.dataframe(df.head())
-            trades = run_backtest(df, capital=capital)
-        else:
-            st.error("❌ CSV must contain: time, open, high, low, close")
-            trades = pd.DataFrame()
-    else:
-        trades = pd.DataFrame()
+# === Get instrument token from symbol ===
+def get_instrument_token(trading_symbol, exchange="NFO"):
+    kite = get_kite()
+    instruments = kite.instruments(exchange)
+    for inst in instruments:
+        if inst["tradingsymbol"] == trading_symbol:
+            return inst["instrument_token"]
+    raise ValueError(f"❌ Instrument token not found for: {trading_symbol}")
 
-# === Live Forward Test (Zerodha) ===
-elif mode == "Forward Test":
-    symbol = st.text_input("Enter Trading Symbol (e.g., NIFTY25JUL25500CE)", value="NIFTY25JUL25500CE")
-    if st.button("🚀 Run Live Forward Test"):
-        with st.spinner("Fetching live OHLC data from Zerodha..."):
-            trades = run_live_forward_test(symbol=symbol, capital=capital)
-        if trades.empty:
-            st.warning("No trades triggered from live data.")
-        else:
-            st.success("✅ Live data processed")
+# === Get OHLC data ===
+def get_ohlc_data(token=None, interval="3minute", days=5, trading_symbol="NIFTY25JUL25500CE"):
+    kite = get_kite()
+    if token is None:
+        token = get_instrument_token(trading_symbol)
 
-else:
-    trades = pd.DataFrame()
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=days)
 
-# === Show Results ===
-if not trades.empty:
-    st.subheader("📄 Trade Log")
-    st.dataframe(trades)
+    data = kite.historical_data(token, from_date, to_date, interval)
+    df = pd.DataFrame(data)
+    df.rename(columns={"date": "time"}, inplace=True)
+    return df
 
-    st.subheader("📈 Capital Over Time")
-    import altair as alt
-    chart = alt.Chart(trades).mark_line(point=True).encode(
-        x='exit_time:T',
-        y='capital_after:Q',
-        tooltip=['exit_time', 'capital_after', 'pnl']
-    ).properties(height=400)
-    st.altair_chart(chart, use_container_width=True)
-
-    st.metric("💰 Net P&L", f"₹{trades['pnl'].sum():,.2f}")
-    st.metric("📊 Final Capital", f"₹{trades['capital_after'].iloc[-1]:,.2f}")
-else:
-    st.info("Run a test to view trade results.")
-
-st.markdown("---")
-st.markdown("📌 Strategy: Heikin Ashi | 3-min | Entry on Green | Exit on Red or 20% Drawdown")
-
+# === Get list of nearby strike prices ===
+def get_strike_list(option_type="CE", atm_price=25500, gap=50, count=3, expiry="25JUL"):
+    # Example output: ['NIFTY25JUL25450CE', 'NIFTY25JUL25500CE', ...]
+    strikes = []
+    for i in range(-count, count + 1):
+        strike = atm_price + (i * gap)
+        symbol = f"NIFTY{expiry}{strike}{option_type.upper()}"
+        strikes.append(symbol)
+    return strikes
