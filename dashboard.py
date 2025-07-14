@@ -1,63 +1,83 @@
 # dashboard.py
 import streamlit as st
 import pandas as pd
-import os
 from datetime import datetime, timedelta
+from trade_engine import run_backtest
 
 # === PAGE SETUP ===
-st.set_page_config(page_title="NIFTY Options Paper Trading Dashboard", layout="wide")
-st.title("📊 NIFTY Options | Paper Trading Dashboard")
+st.set_page_config(page_title="NIFTY Options Dashboard", layout="wide")
+st.title("📊 NIFTY Options | Paper/Live/Backtest Dashboard")
 
 # === SIDEBAR CONTROLS ===
 st.sidebar.header("🔧 Strategy Configuration")
+
 mode = st.sidebar.selectbox("Mode", ["Backtest", "Forward Test", "Live (Coming Soon)"])
+candle_type = st.sidebar.radio("Candle Type", ["Heikin Ashi", "Normal"])
+timeframe = st.sidebar.selectbox("Timeframe", ["1min", "3min", "5min", "15min", "1hr"])
 capital = st.sidebar.number_input("Capital (INR)", value=100000, step=5000)
+dynamic_position = st.sidebar.toggle("Dynamic Position Sizing", value=True)
 option_type = st.sidebar.radio("Option Type", ["CE", "PE"])
-strike_type = st.sidebar.selectbox("Strike Price", ["ATM", "ATM+50", "ATM-50", "Manual"])
-manual_strike = st.sidebar.text_input("Manual Strike Price (if selected above)", value="25500")
+strike_selection = st.sidebar.selectbox("Strike Price", ["ATM", "ATM+50", "ATM-50", "Manual"])
+manual_strike = st.sidebar.text_input("Manual Strike (only if selected above)", value="25500")
 expiry_date = st.sidebar.date_input("Expiry Date", value=datetime.today() + timedelta(days=2))
 
-st.sidebar.markdown("---")
-run_button = st.sidebar.button("▶️ Start Backtest / Forward Test")
-stop_button = st.sidebar.button("⏹️ Stop")
+st.sidebar.divider()
+emergency_stop = st.sidebar.toggle("🛑 Emergency Stop", value=False)
+start_button = st.sidebar.button("▶️ Start Strategy")
+stop_button = st.sidebar.button("⏹️ Stop Strategy")
 
-# === BACKTEST CSV UPLOAD ===
+# === BACKTEST SECTION ===
 if mode == "Backtest":
-    st.subheader("📁 Upload Historical 3m Candle CSV")
+    st.subheader("📁 Upload Historical CSV")
     uploaded_file = st.file_uploader("Upload 3-minute NIFTY option candle file", type="csv")
-    
-    if uploaded_file is not None:
+
+    if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        st.success("✅ CSV Loaded Successfully")
-        st.write(df.head())
+        df.columns = [c.lower() for c in df.columns]
         
-        # Mock trade signal logic (we'll replace this later)
-        df['Signal'] = df['close'].diff().apply(lambda x: "BUY" if x > 2 else ("SELL" if x < -2 else ""))
-        trades = df[df['Signal'] != ""]
+        if not all(col in df.columns for col in ['time', 'open', 'high', 'low', 'close']):
+            st.error("❌ CSV must contain: time, open, high, low, close")
+        else:
+            st.success("✅ CSV validated")
+            st.dataframe(df.head(), use_container_width=True)
 
-        st.subheader("📋 Mock Trades (Based on CSV)")
-        st.dataframe(trades[['time', 'close', 'Signal']])
+            if start_button:
+                trades = run_backtest(
+                    df,
+                    capital=capital,
+                    use_heikin_ashi=(candle_type == "Heikin Ashi"),
+                    dynamic_position=dynamic_position
+                )
 
-        st.subheader("📈 Trade Summary")
-        st.metric("Total Trades", len(trades))
-        st.metric("Capital Remaining", f"₹{capital:,}")
+                if trades.empty:
+                    st.warning("⚠️ No trades found in this config.")
+                else:
+                    st.subheader("📄 Trade Log")
+                    st.dataframe(trades, use_container_width=True)
 
-# === FORWARD TEST PLACEHOLDER ===
+                    st.subheader("📈 Trade Summary")
+                    st.metric("Total Trades", len(trades))
+                    st.metric("Final Capital", f"₹{trades['capital_after'].iloc[-1]:,.2f}")
+                    st.metric("Net P&L", f"₹{trades['pnl'].sum():,.2f}")
+
+                    # Download button
+                    csv = trades.to_csv(index=False).encode("utf-8")
+                    st.download_button("⬇️ Download CSV", data=csv, file_name="nifty_trades.csv", mime="text/csv")
+
+# === FORWARD TEST SECTION ===
 elif mode == "Forward Test":
-    st.subheader("🚀 Forward Testing Mode (Live Market Hours Only)")
-    st.info("This mode will connect to Zerodha Kite API, fetch 3m candles live, and simulate trades.")
-    st.warning("Please ensure API keys and tokens are set up in config.")
+    st.subheader("🚀 Forward Test (Beta)")
+    st.info("This mode will use live 3-min candle data to simulate trades.")
+    st.warning("Zerodha Kite integration required. API config will be used after login setup.")
 
-# === TRADE LOG VIEW ===
-st.subheader("📄 Trade History (trades.csv)")
-if os.path.exists("data/trades.csv"):
-    trade_log = pd.read_csv("data/trades.csv")
-    st.dataframe(trade_log.tail(10))
-    total_pnl = trade_log['pnl'].sum()
-    st.metric("Total P&L", f"₹{total_pnl:,.2f}")
-else:
-    st.info("No trade log found yet. Run a test to generate trades.")
+# === LIVE SECTION ===
+elif mode == "Live (Coming Soon)":
+    st.subheader("💡 Live Trading Mode")
+    st.info("Live trading automation will be enabled after Zerodha integration.")
 
 # === FOOTER ===
-st.markdown("---")
-st.markdown("Made for 🔁 Backtest, 🚀 Forward Test & 💰 Live Trading with Zerodha | v1.0")
+st.divider()
+st.markdown("Made with ❤️ for Algo Trading | Zerodha + Heikin Ashi + Dynamic Position Sizing")
+
+
+
